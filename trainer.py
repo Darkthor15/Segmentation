@@ -1,20 +1,36 @@
 import os
 import json
+import sys
+import mlflow
+import warnings
+from urllib.parse import urlparse
+import logging
+import mlflow.pytorch  # You can use this if you want to log your PyTorch model
 import torch
 import shutil
 import random
 import csv
 import evaluate
-import warnings
+import pandas as pd
 from torch import nn
 from tqdm import tqdm
 from PIL import Image
 from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
 from torch.utils.data import Dataset, DataLoader
+from mlflow.models import infer_signature
 
+logging.basicConfig(level=logging.WARN)
+logger = logging.getLogger(__name__)
+
+# Load configuration
 with open('config.json', 'r') as f:
     config = json.load(f)
 
+
+mlflow.set_tracking_uri('http://0.0.0.0:5000') #set tracking uri
+experiment = mlflow.set_experiment("segmentation-model") #set experiment name
+
+# Create directories for model artifacts and checkpoints
 base_model_dir = os.path.join(config['base_dir'], config['model_name'])
 os.makedirs(base_model_dir, exist_ok=True)
 checkpoint_dir = os.path.join(base_model_dir, 'checkpoints')
@@ -176,58 +192,80 @@ class WeightedCrossEntropyLoss(nn.CrossEntropyLoss):
 
 class_weights = torch.tensor(config.get('class_weights', [1.0] * config['num_labels']), device=device)
 criterion = WeightedCrossEntropyLoss(weights=class_weights, ignore_index=config['ignore_index'])
-model.train()
-losses = []
-for epoch in range(config['num_epochs']):
-    print(f"\nEpoch: {epoch + 1}/{config['num_epochs']}\n" + "-" * 50)
-    running_loss = 0
-    for idx, batch in enumerate(tqdm(train_dataloader)):
-        pixel_values = batch["pixel_values"].to(device)
-        labels = batch["labels"].to(device)
-        optimizer.zero_grad()
-        outputs = model(pixel_values=pixel_values, labels=labels)
-        logits = outputs.logits
-        upsampled_logits = nn.functional.interpolate(logits, size=(512, 896), mode="bilinear", align_corners=False)
-        loss = criterion(upsampled_logits, labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-        with torch.no_grad():
-            predicted = upsampled_logits.argmax(dim=1)
-            metric.add_batch(predictions=predicted.detach().cpu().numpy(), references=labels.detach().cpu().numpy())
-        if idx % 100 == 0:
-            model.eval()
-            val_loss = 0
-            val_steps = 0
-            val_metric = evaluate.load("mean_iou")
-            for val_batch in valid_dataloader:
-                val_pixel_values = val_batch["pixel_values"].to(device)
-                val_labels = val_batch["labels"].to(device)
-                with torch.no_grad():
-                    val_outputs = model(pixel_values=val_pixel_values, labels=val_labels)
-                    val_logits = val_outputs.logits
-                    upsampled_val_logits = nn.functional.interpolate(val_logits, size=(512, 896), mode="bilinear", align_corners=False)
-                    val_loss += criterion(upsampled_val_logits, val_labels).item()
-                    val_predicted = upsampled_val_logits.argmax(dim=1)
-                    val_metric.add_batch(predictions=val_predicted.detach().cpu().numpy(), references=val_labels.detach().cpu().numpy())
-                val_steps += 1
-            val_loss /= val_steps
-            val_metrics = val_metric.compute(num_labels=config['num_labels'], ignore_index=config['ignore_index'])
-            print(f"\nValidation - Loss: {val_loss:.4f}, Mean IoU: {val_metrics['mean_iou']:.4f}, Mean Accuracy: {val_metrics['mean_accuracy']:.4f}\n")
-            model.train()
-    avg_training_loss = running_loss / len(train_dataloader)
-    print(f"Epoch {epoch + 1} - Average Training Loss: {avg_training_loss:.4f}\n")
-    losses.append({
-        'epoch': epoch + 1,
-        'average_training_loss': avg_training_loss,
-        'validation_loss': val_loss,
-        'mean_iou': val_metrics['mean_iou'],
-        'mean_accuracy': val_metrics['mean_accuracy']
-    })
-    checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pt")
-    save_model(model, checkpoint_path)
-    save_checkpoint_metadata(epoch + 1, val_metrics, checkpoint_path)
-    manage_checkpoints(checkpoint_dir, config['num_checkpoints'])
-with open(config['log_file'], 'w') as f:
-    json.dump(losses, f, indent=4)
+
+with mlflow.start_run(experiment_id=experiment.experiment_id) as run:
+    mlflow.log_params(config)
+    
+    model.train()
+    losses = []
+    for epoch in range(config['num_epochs']):
+        print(f"\nEpoch: {epoch + 1}/{config['num_epochs']}\n" + "-" * 50)
+        running_loss = 0
+        for idx, batch in enumerate(tqdm(train_dataloader)):
+            pixel_values = batch["pixel_values"].to(device)
+            labels = batch["labels"].to(device)
+            optimizer.zero_grad()
+            dummy_input = {"pixel_values": pixel_values.cpu().numpy(),"labels": labels.cpu().numpy()}
+            outputs = model(pixel_values=pixel_values, labels=labels)
+            logits = outputs.logits
+            upsampled_logits = nn.functional.interpolate(logits, size=(512, 896), mode="bilinear", align_corners=False)
+            loss = criterion(upsampled_logits, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            with torch.no_grad():
+                predicted = upsampled_logits.argmax(dim=1)
+                metric.add_batch(predictions=predicted.detach().cpu().numpy(), references=labels.detach().cpu().numpy())
+            if idx % 100 == 0:
+                model.eval()
+                val_loss = 0
+                val_steps = 0
+                val_metric = evaluate.load("mean_iou")
+                for val_batch in valid_dataloader:
+                    val_pixel_values = val_batch["pixel_values"].to(device)
+                    val_labels = val_batch["labels"].to(device)
+                    with torch.no_grad():
+                        val_outputs = model(pixel_values=val_pixel_values, labels=val_labels)
+                        val_logits = val_outputs.logits
+                        upsampled_val_logits = nn.functional.interpolate(val_logits, size=(512, 896), mode="bilinear", align_corners=False)
+                        val_loss += criterion(upsampled_val_logits, val_labels).item()
+                        val_predicted = upsampled_val_logits.argmax(dim=1)
+                        val_metric.add_batch(predictions=val_predicted.detach().cpu().numpy(), references=val_labels.detach().cpu().numpy())
+                    val_steps += 1
+                val_loss /= val_steps
+                val_metrics = val_metric.compute(num_labels=config['num_labels'], ignore_index=config['ignore_index'])
+                tqdm.write(f"Validation - Loss: {val_loss:.4f}, Mean IoU: {val_metrics['mean_iou']:.4f}, Mean Accuracy: {val_metrics['mean_accuracy']:.4f}")
+                model.train()
+        avg_training_loss = running_loss / len(train_dataloader)
+        print(f"Epoch {epoch + 1} - Average Training Loss: {avg_training_loss:.4f}\n")
+        losses.append({
+            'epoch': epoch + 1,
+            'average_training_loss': avg_training_loss,
+            'validation_loss': val_loss,
+            'mean_iou': val_metrics['mean_iou'],
+            'mean_accuracy': val_metrics['mean_accuracy']
+        })
+
+        # Log metrics for each epoch in MLflow
+        mlflow.log_metric("train_loss", avg_training_loss, step=epoch + 1)
+        mlflow.log_metric("val_loss", val_loss, step=epoch + 1)
+        mlflow.log_metric("mean_iou", val_metrics['mean_iou'], step=epoch + 1)
+        mlflow.log_metric("mean_accuracy", val_metrics['mean_accuracy'], step=epoch + 1)
+        
+        checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pt")
+        save_model(model, checkpoint_path)
+        save_checkpoint_metadata(epoch + 1, val_metrics, checkpoint_path)
+        mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")  #log artifact as well
+        manage_checkpoints(checkpoint_dir, config['num_checkpoints'])
+        signature = infer_signature(dummy_input , logits.detach().cpu().numpy())
+    
+
+    mlflow.set_tag("Training Info", "Everything about segmentation")
+    # Save the training losses log file as an artifact
+    with open(config['log_file'], 'w') as f:
+        json.dump(losses, f, indent=4)
+    mlflow.log_artifact(config['log_file'], artifact_path="logs")
+
+    mlflow.pytorch.log_model(model, artifact_path="pytorch_model" , input_example = dummy_input , signature = signature  , registered_model_name = 'segmentation-model') #log model as well
+    
 warnings.filterwarnings("ignore", message="Downcasting array dtype")
