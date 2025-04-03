@@ -1,0 +1,24 @@
+{
+  "root_dir": "split/100_percent",
+  "batch_size": 3,
+  "num_epochs": 30, 
+  "learning_rate": 0.00006,
+  "model_name": "nvidia/mit-b1",
+  "repo_id": "huggingface/label-files",
+  "filename": "ade20k-id2label.json",
+  "do_reduce_labels": false,
+  "num_labels": 5,
+  "ignore_index": 255,
+  "checkpoint_dir": "checkpoints",
+  "log_file": "training_log.txt",
+  "num_checkpoints": 3,
+  "base_dir": "models",
+  "from_checkpoint": true,
+  "class_weights": [2.0, 1.0, 1.0, 1.0, 4.0],
+  "freeze_layers": false,
+  "num_layers_to_freeze": 8,
+  "load_weights_from_file": false,
+  "weights_file_path": "models_unsupervised/nvidia/mit-b4/checkpoints/model_epoch_3_batch_230.pt",
+  "num_layers_to_load": 8
+
+}

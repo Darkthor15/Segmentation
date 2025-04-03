@@ -1,0 +1,23 @@
+[
+    {
+        "epoch": 1,
+        "average_training_loss": 0.04032628277939064,
+        "validation_loss": 0.27385517897999895,
+        "mean_iou": 0.7640257214216564,
+        "mean_accuracy": 0.8212939341073896
+    },
+    {
+        "epoch": 2,
+        "average_training_loss": 0.03818016226488488,
+        "validation_loss": 0.191529680296021,
+        "mean_iou": 0.7875652543891635,
+        "mean_accuracy": 0.8375964728066495
+    },
+    {
+        "epoch": 3,
+        "average_training_loss": 0.04111715766899019,
+        "validation_loss": 0.20402811395825218,
+        "mean_iou": 0.8302562925370643,
+        "mean_accuracy": 0.8798470781407602
+    }
+]

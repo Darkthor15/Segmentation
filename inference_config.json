@@ -1,0 +1,19 @@
+{
+    "root_dir": "split/100_percent",
+    "model_name": "nvidia/mit-b1",
+    "base_dir": "models",
+    "checkpoint_dir": "checkpoints",
+    "batch_size": 1,
+    "do_reduce_labels": false,
+    "id2label_path": "lawnmower_label.json",
+    "background_image_path": "background.png",
+    "blend_alpha": 0.3,
+    "color_mapping": {
+        "0": [0, 255, 0],    
+        "1": [0, 0, 255],    
+        "2": [255, 165, 0],  
+        "3": [255, 0, 255],  
+        "4": [255, 255, 0]   
+    }
+      
+}
