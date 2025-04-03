@@ -1,6 +1,9 @@
 import os
 import json
 import sys
+from PIL import ImageEnhance, ImageFilter
+import random
+import cv2
 import mlflow
 import warnings
 from urllib.parse import urlparse
@@ -11,6 +14,7 @@ import shutil
 import random
 import csv
 import evaluate
+import numpy as np
 import pandas as pd
 from torch import nn
 from tqdm import tqdm
@@ -38,10 +42,13 @@ os.makedirs(checkpoint_dir, exist_ok=True)
 checkpoint_csv = os.path.join(checkpoint_dir, 'checkpoints.csv')
 
 class SemanticSegmentationDataset(Dataset):
-    def __init__(self, root_dir, image_processor, train=True):
+    def __init__(self, root_dir, image_processor, train=True, add_noise=False, perturbation_type = "none" , perturbation_params={}):
         self.root_dir = root_dir
         self.image_processor = image_processor
         self.train = train
+        self.add_noise = add_noise
+        self.perturbation_type = perturbation_type
+        self.perturbation_params = perturbation_params
         sub_path = "training" if self.train else "validation"
         self.img_dir = os.path.join(self.root_dir, "images", sub_path)
         self.ann_dir = os.path.join(self.root_dir, "annotations", sub_path)
@@ -57,14 +64,73 @@ class SemanticSegmentationDataset(Dataset):
         segmentation_map = Image.open(os.path.join(self.ann_dir, self.annotations[idx]))
         image = image.resize((512, 896))
         segmentation_map = segmentation_map.resize((512, 896), resample=Image.NEAREST)
+        
+        # if self.add_noise and not self.train:
+        #     image = self.apply_perturbation(image)
+            #visualization
+        if self.add_noise and not self.train and idx < 3:
+            debug_dir = "debug_noisy_samples"
+            os.makedirs(debug_dir, exist_ok=True)
+            image.copy().save(os.path.join(debug_dir, f"val_clean_{idx}.png"))
+
+        if self.add_noise and not self.train:
+            image = self.apply_perturbation(image)
+
+            if idx < 3:
+                image.save(os.path.join(debug_dir, f"val_noisy_{self.perturbation_type}_{idx}.png"))
         encoded_inputs = self.image_processor(image, segmentation_map, return_tensors="pt")
         for k, v in encoded_inputs.items():
             encoded_inputs[k].squeeze_()
         return encoded_inputs
+    
+    def apply_perturbation(self, image):
+        if self.perturbation_type == "gaussian_noise":
+            return self.add_gaussian_noise(image)
+        elif self.perturbation_type == "gaussian_blur":
+            radius = self.perturbation_params['radius']
+            return image.filter(ImageFilter.GaussianBlur(radius=radius))
+        elif self.perturbation_type == "brightness":
+            min_b, max_b = self.perturbation_params['range']
+            enhancer = ImageEnhance.Brightness(image)
+            return enhancer.enhance(random.uniform(min_b, max_b))
+        elif self.perturbation_type == "haze":
+            alpha = self.perturbation_params['alpha']
+            haze_color = tuple(self.perturbation_params['color'])
+            return self.simulate_haze(image, alpha, haze_color)
+        elif self.perturbation_type == "motion_blur":
+            kernel_size = self.perturbation_params['kernel_size']
+            return self.apply_motion_blur(image, kernel_size)
+        else:
+            return image
+        
+    def add_gaussian_noise(self, image):
+        mean = self.perturbation_params.get('mean', 0)
+        std = self.perturbation_params.get('std', 15)
+        img_array = np.array(image).astype(np.float32)
+        noise = np.random.normal(mean, std, img_array.shape)
+        noisy_img = np.clip(img_array + noise, 0, 255).astype(np.uint8)
+        return Image.fromarray(noisy_img)
+    def simulate_haze(self, image, alpha, haze_color):
+        haze_layer = np.full((image.height, image.width, 3), haze_color, dtype=np.uint8)
+        image_np = np.array(image)
+        hazy = (alpha * image_np + (1 - alpha) * haze_layer).astype(np.uint8)
+        return Image.fromarray(hazy)
+    def apply_motion_blur(self, image, kernel_size):
+        img = np.array(image)
+        kernel = np.zeros((kernel_size, kernel_size))
+        kernel[int((kernel_size - 1)/2), :] = np.ones(kernel_size)
+        kernel = kernel / kernel_size
+        blurred = cv2.filter2D(img, -1, kernel)
+        return Image.fromarray(blurred)
+    
+
+perturb_type = config.get("perturbation_type", "none")
+perturb_params = config.get("perturbation_params", {}).get(perturb_type, {})
 
 image_processor = SegformerImageProcessor(do_reduce_labels=config['do_reduce_labels'], size=(512, 896))
 train_dataset = SemanticSegmentationDataset(root_dir=config['root_dir'], image_processor=image_processor)
-valid_dataset = SemanticSegmentationDataset(root_dir=config['root_dir'], image_processor=image_processor, train=False)
+valid_dataset = SemanticSegmentationDataset(root_dir=config['root_dir'], image_processor=image_processor, train=False, add_noise=(perturb_type != "none"),
+    perturbation_type=perturb_type,  perturbation_params=perturb_params)
 train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
 valid_dataloader = DataLoader(valid_dataset, batch_size=config['batch_size'])
 

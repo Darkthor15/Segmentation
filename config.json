@@ -1,7 +1,7 @@
 {
   "root_dir": "split/100_percent",
   "batch_size": 3,
-  "num_epochs": 25, 
+  "num_epochs": 3,  
   "learning_rate": 0.00006,
   "model_name": "nvidia/mit-b4",
   "repo_id": "huggingface/label-files",
@@ -19,6 +19,14 @@
   "num_layers_to_freeze": 8,
   "load_weights_from_file": false,
   "weights_file_path": "models_unsupervised/nvidia/mit-b4/checkpoints/model_epoch_3_batch_230.pt",
-  "num_layers_to_load": 8
+  "num_layers_to_load": 8,
+  "perturbation_type": "gaussian_blur",
+  "perturbation_params": {
+    "gaussian_noise": { "mean": 0, "std": 15 },
+    "gaussian_blur": { "radius": 2 },
+    "brightness": { "range": [0.5, 1.5] },
+    "motion_blur": { "kernel_size": 9 },
+    "haze": { "alpha": 0.6, "color": [200, 200, 200] }
+}
 
 }
